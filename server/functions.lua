@@ -1,6 +1,7 @@
 QBCore.Functions = {}
 QBCore.Player_Buckets = {}
 QBCore.Entity_Buckets = {}
+QBCore.UsableItems = {}
 
 -- Getters
 -- Get your player first and then trigger a function on them
@@ -44,7 +45,7 @@ function QBCore.Functions.GetPlayer(source)
 end
 
 function QBCore.Functions.GetPlayerByCitizenId(citizenid)
-    for src, _ in pairs(QBCore.Players) do
+    for src in pairs(QBCore.Players) do
         if QBCore.Players[src].PlayerData.citizenid == citizenid then
             return QBCore.Players[src]
         end
@@ -52,8 +53,12 @@ function QBCore.Functions.GetPlayerByCitizenId(citizenid)
     return nil
 end
 
+function QBCore.Functions.GetOfflinePlayerByCitizenId(citizenid)
+    return QBCore.Player.GetOfflinePlayer(citizenid)
+end
+
 function QBCore.Functions.GetPlayerByPhone(number)
-    for src, _ in pairs(QBCore.Players) do
+    for src in pairs(QBCore.Players) do
         if QBCore.Players[src].PlayerData.charinfo.phone == number then
             return QBCore.Players[src]
         end
@@ -63,7 +68,7 @@ end
 
 function QBCore.Functions.GetPlayers()
     local sources = {}
-    for k, _ in pairs(QBCore.Players) do
+    for k in pairs(QBCore.Players) do
         sources[#sources+1] = k
     end
     return sources
@@ -163,13 +168,44 @@ function QBCore.Functions.GetEntitiesInBucket(bucket --[[ int ]])
     end
 end
 
--- Paychecks (standalone - don't touch)
+-- Server side vehicle creation with optional callback
+-- the CreateVehicle RPC still uses the client for creation so players must be near
+function QBCore.Functions.SpawnVehicle(source, model, coords, warp)
+    local ped = GetPlayerPed(source)
+    model = type(model) == 'string' and joaat(model) or model
+    if not coords then coords = GetEntityCoords(ped) end
+    local veh = CreateVehicle(model, coords.x, coords.y, coords.z, coords.w, true, true)
+    while not DoesEntityExist(veh) do Wait(0) end
+    if warp then
+        while GetVehiclePedIsIn(ped) ~= veh do
+            Wait(0)
+            TaskWarpPedIntoVehicle(ped, veh, -1)
+        end
+    end
+    while NetworkGetEntityOwner(veh) ~= source do Wait(0) end
+    return veh
+end
 
+-- Server side vehicle creation with optional callback
+-- the CreateAutomobile native is still experimental but doesn't use client for creation
+-- doesn't work for all vehicles!
+function QBCore.Functions.CreateVehicle(source, model, coords, warp)
+    model = type(model) == 'string' and joaat(model) or model
+    if not coords then coords = GetEntityCoords(GetPlayerPed(source)) end
+    local CreateAutomobile = `CREATE_AUTOMOBILE`
+    local veh = Citizen.InvokeNative(CreateAutomobile, model, coords, coords.w, true, true)
+    while not DoesEntityExist(veh) do Wait(0) end
+    if warp then TaskWarpPedIntoVehicle(GetPlayerPed(source), veh, -1) end
+    return veh
+end
+
+-- Paychecks (standalone - don't touch)
 function PaycheckInterval()
     if next(QBCore.Players) then
         for _, Player in pairs(QBCore.Players) do
             if Player then
-                local payment = Player.PlayerData.job.payment
+                local payment = QBShared.Jobs[Player.PlayerData.job.name]['grades'][tostring(Player.PlayerData.job.grade.level)].payment
+                if not payment then payment = Player.PlayerData.job.payment end
                 if Player.PlayerData.job and payment > 0 and (QBShared.Jobs[Player.PlayerData.job.name].offDutyPay or Player.PlayerData.job.onduty) then
                     if QBCore.Config.Money.PayCheckSociety then
                         local account = exports['qb-management']:GetAccount(Player.PlayerData.job.name)
@@ -196,8 +232,15 @@ function PaycheckInterval()
     SetTimeout(QBCore.Config.Money.PayCheckTimeOut * (60 * 1000), PaycheckInterval)
 end
 
--- Callbacks
+-- Callback Functions --
 
+-- Client Callback
+function QBCore.Functions.TriggerClientCallback(name, source, cb, ...)
+    QBCore.ClientCallbacks[name] = cb
+    TriggerClientEvent('QBCore:Client:TriggerClientCallback', source, name, ...)
+end
+
+-- Server Callback
 function QBCore.Functions.CreateCallback(name, cb)
     QBCore.ServerCallbacks[name] = cb
 end
@@ -209,16 +252,17 @@ end
 
 -- Items
 
-function QBCore.Functions.CreateUseableItem(item, cb)
-    QBCore.UseableItems[item] = cb
+function QBCore.Functions.CreateUseableItem(item, data)
+    QBCore.UsableItems[item] = data
 end
 
 function QBCore.Functions.CanUseItem(item)
-    return QBCore.UseableItems[item]
+    return QBCore.UsableItems[item]
 end
 
 function QBCore.Functions.UseItem(source, item)
-    QBCore.UseableItems[item.name](source, item)
+    if GetResourceState('qb-inventory') == 'missing' then return end
+    exports['qb-inventory']:UseItem(source, item)
 end
 
 -- Kick Player
@@ -264,25 +308,23 @@ end
 -- Setting & Removing Permissions
 
 function QBCore.Functions.AddPermission(source, permission)
-    local src = source
-    local license = QBCore.Functions.GetIdentifier(src, 'license')
-    ExecuteCommand(('add_principal identifier.%s qbcore.%s'):format(license, permission))
-    QBCore.Commands.Refresh(src)
+    if not IsPlayerAceAllowed(source, permission) then
+        ExecuteCommand(('add_principal player.%s qbcore.%s'):format(source, permission))
+        QBCore.Commands.Refresh(source)
+    end
 end
 
 function QBCore.Functions.RemovePermission(source, permission)
-    local src = source
-    local license = QBCore.Functions.GetIdentifier(src, 'license')
     if permission then
-        if IsPlayerAceAllowed(src, permission) then
-            ExecuteCommand(('remove_principal identifier.%s qbcore.%s'):format(license, permission))
-            QBCore.Commands.Refresh(src)
+        if IsPlayerAceAllowed(source, permission) then
+            ExecuteCommand(('remove_principal player.%s qbcore.%s'):format(source, permission))
+            QBCore.Commands.Refresh(source)
         end
     else
         for _, v in pairs(QBCore.Config.Server.Permissions) do
-            if IsPlayerAceAllowed(src, v) then
-                ExecuteCommand(('remove_principal identifier.%s qbcore.%s'):format(license, v))
-                QBCore.Commands.Refresh(src)
+            if IsPlayerAceAllowed(source, v) then
+                ExecuteCommand(('remove_principal player.%s qbcore.%s'):format(source, v))
+                QBCore.Commands.Refresh(source)
             end
         end
     end
@@ -291,8 +333,14 @@ end
 -- Checking for Permission Level
 
 function QBCore.Functions.HasPermission(source, permission)
-    local src = source
-    if IsPlayerAceAllowed(src, permission) then return true end
+    if type(permission) == "string" then
+        if IsPlayerAceAllowed(source, permission) then return true end
+    elseif type(permission) == "table" then
+        for _, permLevel in pairs(permission) do
+            if IsPlayerAceAllowed(source, permLevel) then return true end
+        end
+    end
+
     return false
 end
 
@@ -321,7 +369,7 @@ function QBCore.Functions.ToggleOptin(source)
     if not license or not QBCore.Functions.HasPermission(source, 'admin') then return end
     local Player = QBCore.Functions.GetPlayer(source)
     Player.PlayerData.optin = not Player.PlayerData.optin
-    Player.Functions.SetMetaData('optin', Player.PlayerData.optin)
+    Player.Functions.SetPlayerData('optin', Player.PlayerData.optin)
 end
 
 -- Check if player is banned
@@ -354,4 +402,15 @@ function QBCore.Functions.IsLicenseInUse(license)
         end
     end
     return false
+end
+
+-- Utility functions
+
+function QBCore.Functions.HasItem(source, items, amount)
+    if GetResourceState('qb-inventory') == 'missing' then return end
+    return exports['qb-inventory']:HasItem(source, items, amount)
+end
+
+function QBCore.Functions.Notify(source, text, type, length)
+    TriggerClientEvent('QBCore:Notify', source, text, type, length)
 end

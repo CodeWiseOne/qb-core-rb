@@ -8,15 +8,12 @@ function QBCore.Functions.GetPlayerData(cb)
 end
 
 function QBCore.Functions.GetCoords(entity)
-    return vector4(GetEntityCoords(entity), GetEntityHeading(entity))
+    local coords = GetEntityCoords(entity)
+    return vector4(coords.x, coords.y, coords.z, GetEntityHeading(entity))
 end
 
-function QBCore.Functions.HasItem(item)
-    local p = promise.new()
-    QBCore.Functions.TriggerCallback('QBCore:HasItem', function(result)
-        p:resolve(result)
-    end, item)
-    return Citizen.Await(p)
+function QBCore.Functions.HasItem(items, amount)
+    return exports['qb-inventory']:HasItem(items, amount)
 end
 
 -- Utility
@@ -61,8 +58,8 @@ function QBCore.Functions.RequestAnimDict(animDict)
 end
 
 function QBCore.Functions.PlayAnim(animDict, animName, upperbodyOnly, duration)
-    local flags = upperbodyOnly == true and 16 or 0
-    local runTime = duration ~= nil and duration or -1
+    local flags = upperbodyOnly and 16 or 0
+    local runTime = duration or -1
     QBCore.Functions.RequestAnimDict(animDict)
     TaskPlayAnim(PlayerPedId(), animDict, animName, 8.0, 1.0, runTime, flags, 0.0, false, false, true)
     RemoveAnimDict(animDict)
@@ -117,6 +114,19 @@ function QBCore.Debug(resource, obj, depth)
     TriggerServerEvent('QBCore:DebugSomething', resource, obj, depth)
 end
 
+-- Callback Functions --
+
+-- Client Callback
+function QBCore.Functions.CreateClientCallback(name, cb)
+    QBCore.ClientCallbacks[name] = cb
+end
+
+function QBCore.Functions.TriggerClientCallback(name, cb, ...)
+    if not QBCore.ClientCallbacks[name] then return end
+    QBCore.ClientCallbacks[name](cb, ...)
+end
+
+-- Server Callback
 function QBCore.Functions.TriggerCallback(name, cb, ...)
     QBCore.ServerCallbacks[name] = cb
     TriggerServerEvent('QBCore:Server:TriggerCallback', name, ...)
@@ -358,7 +368,7 @@ function QBCore.Functions.SpawnVehicle(model, cb, coords, isnetworked, teleportI
     else
         coords = GetEntityCoords(ped)
     end
-    isnetworked = isnetworked or true
+    isnetworked = isnetworked == nil or isnetworked
     QBCore.Functions.LoadModel(model)
     local veh = CreateVehicle(model, coords.x, coords.y, coords.z, coords.w, isnetworked, false)
     local netid = NetworkGetNetworkIdFromEntity(veh)
@@ -380,6 +390,11 @@ end
 function QBCore.Functions.GetPlate(vehicle)
     if vehicle == 0 then return end
     return QBCore.Shared.Trim(GetVehicleNumberPlateText(vehicle))
+end
+
+function QBCore.Functions.GetVehicleLabel(vehicle)
+    if vehicle == nil or vehicle == 0 then return end
+    return GetLabelText(GetDisplayNameFromVehicleModel(GetEntityModel(vehicle)))
 end
 
 function QBCore.Functions.SpawnClear(coords, radius)
@@ -647,7 +662,7 @@ function QBCore.Functions.SetVehicleProperties(vehicle, props)
         if props.doorStatus then
             for doorIndex, breakDoor in pairs(props.doorStatus) do
                 if breakDoor then
-                    SetVehicleDoorBroken(vehicle, doorIndex, true)
+                    SetVehicleDoorBroken(vehicle, tonumber(doorIndex), true)
                 end
             end
         end
@@ -917,4 +932,63 @@ function QBCore.Functions.StartParticleOnEntity(dict, ptName, looped, entity, bo
         end
     end
     return particleHandle
+end
+
+function QBCore.Functions.GetStreetNametAtCoords(coords)
+    local streetname1, streetname2 = GetStreetNameAtCoord(coords.x, coords.y, coords.z)
+    return { main = GetStreetNameFromHashKey(streetname1), cross = GetStreetNameFromHashKey(streetname2) }
+end
+
+function QBCore.Functions.GetZoneAtCoords(coords)
+    return GetLabelText(GetNameOfZone(coords))
+end
+
+function QBCore.Functions.GetCardinalDirection(entity)
+    entity = DoesEntityExist(entity) and entity or PlayerPedId()
+    if DoesEntityExist(entity) then
+        local heading = GetEntityHeading(entity)
+        if ((heading >= 0 and heading < 45) or (heading >= 315 and heading < 360)) then
+            return "North"
+        elseif (heading >= 45 and heading < 135) then
+            return "West"
+        elseif (heading >= 135 and heading < 225) then
+            return "South"
+        elseif (heading >= 225 and heading < 315) then
+            return "East"
+        end
+    else
+        return "Cardinal Direction Error"
+    end
+end
+
+function QBCore.Functions.GetCurrentTime()
+    local obj = {}
+    obj.min = GetClockMinutes()
+    obj.hour = GetClockHours()
+
+    if obj.hour <= 12 then
+        obj.ampm = "AM"
+    elseif obj.hour >= 13 then
+        obj.ampm = "PM"
+        obj.formattedHour = obj.hour - 12
+    end
+
+    if obj.min <= 9 then
+        obj.formattedMin = "0" .. obj.min
+    end
+
+    return obj
+end
+
+function QBCore.Functions.GetGroundZCoord(coords)
+    if not coords then return end
+
+    local retval, groundZ = GetGroundZFor_3dCoord(coords.x, coords.y, coords.z, 0)
+    if retval then
+        return vector3(coords.x, coords.y, groundZ)
+    else
+        print('Couldn\'t find Ground Z Coordinates given 3D Coordinates')
+        print(coords)
+        return coords
+    end
 end
